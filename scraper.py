@@ -6,6 +6,7 @@ from supabase import create_client
 from datetime import datetime
 import time
 import re
+import unicodedata
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -54,9 +55,16 @@ INSURANCE_AGENT_EXCLUDE = [
 
 # ── Filters ──────────────────────────────────────────────────────────────────
 
-def is_remote(text: str) -> bool:
+def normalize_text(text: str) -> str:
+    if not text:
+        return ""
     text = text.lower()
-    return any(kw in text for kw in REMOTE_KEYWORDS)
+    # Normalize Romanian diacritics so "acasă" matches "acasa"
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+
+def is_remote(text: str) -> bool:
+    normalized = normalize_text(text)
+    return any(normalize_text(kw) in normalized for kw in REMOTE_KEYWORDS)
 
 def is_relevant(title: str, description: str) -> bool:
     combined = (title + " " + description).lower()
@@ -70,9 +78,9 @@ def is_insurance_agent_role(title: str, description: str) -> bool:
     combined = (title + " " + description).lower()
     return any(kw in combined for kw in INSURANCE_AGENT_EXCLUDE)
 
-def should_skip(title: str, description: str, location: str = "") -> bool:
+def should_skip(title: str, description: str, location: str = "", force_remote: bool = False) -> bool:
     combined = (title + " " + description + " " + location).lower()
-    if not is_remote(combined):
+    if not force_remote and not is_remote(combined):
         return True
     if not is_relevant(title, description):
         return True
@@ -109,7 +117,7 @@ def save_job(title, company, location, description, url, source, date_posted=Non
 
 # ── RSS Sources ──────────────────────────────────────────────────────────────
 
-def scrape_rss(feed_url: str, source_name: str):
+def scrape_rss(feed_url: str, source_name: str, force_remote: bool = False):
     print(f"\n[{source_name}] Fetching RSS...")
     try:
         feed = feedparser.parse(feed_url)
@@ -129,7 +137,7 @@ def scrape_rss(feed_url: str, source_name: str):
 
             clean_desc = re.sub(r"<[^>]+>", " ", description)
 
-            if should_skip(title, clean_desc, location):
+            if should_skip(title, clean_desc, location, force_remote=force_remote):
                 continue
 
             date_posted = entry.get("published", "")
@@ -142,7 +150,7 @@ def scrape_rss(feed_url: str, source_name: str):
 
 
 def scrape_remotive():
-    scrape_rss("https://remotive.com/feed", "remotive.com")
+    scrape_rss("https://remotive.com/feed", "remotive.com", force_remote=True)
 
 def scrape_jobicy():
     print("\n[jobicy.com] Fetching API...")
@@ -166,7 +174,7 @@ def scrape_jobicy():
                 description = re.sub(r"<[^>]+>", " ", job.get("jobDescription", ""))
                 url_job = job.get("url", "")
                 date_posted = job.get("pubDate", "")
-                if should_skip(title, description, location):
+                if should_skip(title, description, location, force_remote=True):
                     continue
                 save_job(title, company, location, description, url_job, "jobicy.com", date_posted)
                 count += 1
@@ -176,7 +184,7 @@ def scrape_jobicy():
         print(f"  ERROR: {e}")
 
 def scrape_jobscollider():
-    scrape_rss("https://jobscollider.com/remote-jobs/feed", "jobscollider.com")
+    scrape_rss("https://jobscollider.com/remote-jobs/feed", "jobscollider.com", force_remote=True)
 
 
 # ── ejobs.ro ─────────────────────────────────────────────────────────────────
@@ -209,6 +217,9 @@ def scrape_ejobs():
             )
 
             print(f"  [{query}] found {len(jobs)} raw items")
+            if jobs:
+                print(f"  DEBUG first item classes: {jobs[0].get('class')}")
+                print(f"  DEBUG first item snippet: {str(jobs[0])[:300]}")
 
             for job in jobs[:20]:
                 title_el = (
@@ -230,6 +241,7 @@ def scrape_ejobs():
                 description = desc_el.get_text(strip=True) if desc_el else title
 
                 if should_skip(title, description, location):
+                    print(f"  SKIP: {title[:50]} | loc:{location[:30]}")
                     continue
                 save_job(title, company, location, description, job_url, "ejobs.ro")
                 count += 1
