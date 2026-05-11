@@ -208,6 +208,14 @@ def scrape_ejobs():
             r = requests.get(url, headers=headers, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
             jobs = []
+            anchor_samples = []
+            for a in soup.select("a[href]"):
+                href = (a.get("href") or "").strip()
+                text = a.get_text(" ", strip=True)
+                if href and text and ("locuri-de-munca" in href or "remote" in href):
+                    anchor_samples.append((href, text))
+                    if len(anchor_samples) >= 5:
+                        break
             for script in soup.select("script[type='application/ld+json']"):
                 raw = (script.string or script.get_text() or "").strip()
                 if not raw:
@@ -252,6 +260,10 @@ def scrape_ejobs():
                 unique[j["url"]] = j
             jobs = list(unique.values())
             print(f"  [{query}] found {len(jobs)} json-ld jobs")
+            if query == searches[0] and anchor_samples:
+                print("  DEBUG ejobs anchor samples:")
+                for href, text in anchor_samples:
+                    print(f"    - {href} | {text[:90]}")
 
             for job in jobs:
                 title = job["title"].strip()
@@ -299,6 +311,12 @@ def scrape_bestjobs():
             soup = BeautifulSoup(r.text, "html.parser")
             links = soup.select("a[href*='/ro/locuri-de-munca/']")
             print(f"  [{query}] found {len(links)} candidate links")
+            if query == searches[0]:
+                print("  DEBUG bestjobs link samples:")
+                for link in links[:5]:
+                    href = (link.get("href") or "").strip()
+                    text = link.get_text(" ", strip=True)
+                    print(f"    - {href} | {text[:90]}")
 
             for link in links:
                 title = link.get_text(strip=True)
@@ -338,6 +356,12 @@ def scrape_hipo():
             soup = BeautifulSoup(r.text, "html.parser")
             links = soup.select("a[href*='/locuri-de-munca/']")
             print(f"  [{query}] found {len(links)} candidate links")
+            if query == searches[0]:
+                print("  DEBUG hipo link samples:")
+                for link in links[:5]:
+                    href = (link.get("href") or "").strip()
+                    text = link.get_text(" ", strip=True)
+                    print(f"    - {href} | {text[:90]}")
 
             for link in links:
                 title = link.get_text(strip=True)
