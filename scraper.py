@@ -8,10 +8,13 @@ import time
 import re
 import unicodedata
 import json
+import gspread
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "").strip()
+GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 
 # ── Keywords ────────────────────────────────────────────────────────────────
 
@@ -52,6 +55,91 @@ INSURANCE_AGENT_EXCLUDE = [
     "agent comercial", "vanzare asigurari", "prospectare clienti",
     "portofoliu clienti", "comision vanzari",
 ]
+
+SHEET_HEADERS = [
+    "date_found",
+    "source",
+    "title",
+    "company",
+    "location",
+    "salary",
+    "short_description_ru",
+    "url",
+]
+
+
+def extract_salary_value(text: str) -> str:
+    if not text:
+        return ""
+    clean = text.replace(",", " ").replace(".", " ")
+    # Range: 2900 - 6000
+    m_range = re.search(r"\b(\d{3,6})\s*[-–]\s*(\d{3,6})\b", clean)
+    if m_range:
+        return f"{m_range.group(1)}-{m_range.group(2)}"
+    # Single value: 4500
+    m_single = re.search(r"\b(\d{3,6})\b", clean)
+    if m_single:
+        return m_single.group(1)
+    return ""
+
+
+def build_short_description_ru(title: str, location: str, salary: str) -> str:
+    loc = location or "Remote"
+    salary_part = salary if salary else "не указана"
+    return f"💼 {title}. 🌍 Локация: {loc}. 💰 Зарплата: {salary_part}."
+
+
+class GoogleSheetWriter:
+    def __init__(self):
+        self.enabled = bool(GOOGLE_SHEET_ID and GOOGLE_SERVICE_ACCOUNT_JSON)
+        self.worksheet = None
+        self.existing_urls = set()
+        self.initialized = False
+
+    def init(self):
+        if self.initialized or not self.enabled:
+            return
+        creds = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        client = gspread.service_account_from_dict(creds)
+        sh = client.open_by_key(GOOGLE_SHEET_ID)
+        self.worksheet = sh.sheet1
+
+        values = self.worksheet.get_all_values()
+        if not values:
+            self.worksheet.append_row(SHEET_HEADERS, value_input_option="USER_ENTERED")
+        elif values[0] != SHEET_HEADERS:
+            # Keep existing sheet, but make sure we can still dedupe by URL column if present.
+            pass
+
+        url_col_idx = 8  # 1-based index of "url" in SHEET_HEADERS
+        for row in values[1:]:
+            if len(row) >= url_col_idx and row[url_col_idx - 1]:
+                self.existing_urls.add(row[url_col_idx - 1].strip())
+        self.initialized = True
+
+    def append_if_new(self, job: dict):
+        if not self.enabled:
+            return
+        self.init()
+        url = (job.get("url") or "").strip()
+        if not url or url in self.existing_urls:
+            return
+        row = [
+            job.get("date_found", ""),
+            job.get("source", ""),
+            job.get("title", ""),
+            job.get("company", ""),
+            job.get("location", ""),
+            job.get("salary", ""),
+            job.get("short_description_ru", ""),
+            url,
+        ]
+        self.worksheet.append_row(row, value_input_option="USER_ENTERED")
+        self.existing_urls.add(url)
+        print(f"  📄 Added to Google Sheet: {job.get('title', '')[:60]}")
+
+
+sheet_writer = GoogleSheetWriter()
 
 
 # ── Filters ──────────────────────────────────────────────────────────────────
@@ -97,14 +185,35 @@ def should_skip(title: str, description: str, location: str = "", force_remote: 
 def save_job(title, company, location, description, url, source, date_posted=None):
     if not url:
         return
+    salary = extract_salary_value(f"{title} {description}")
+    short_description_ru = build_short_description_ru(title, location or "Remote", salary)
+    date_found = datetime.utcnow().isoformat() + "Z"
+
+    job_payload = {
+        "date_found": date_found,
+        "source": source,
+        "title": title[:500] if title else "",
+        "company": company[:255] if company else "",
+        "location": location[:255] if location else "",
+        "salary": salary,
+        "short_description_ru": short_description_ru,
+        "url": url,
+    }
+
+    # Google Sheet dedupe is independent: "only new relative to sheet"
+    try:
+        sheet_writer.append_if_new(job_payload)
+    except Exception as e:
+        print(f"  WARN [sheets]: {e}")
+
     existing = supabase.table("jobs").select("id").eq("url", url).execute()
     if existing.data:
         return  # already exists
 
     supabase.table("jobs").insert({
-        "title": title[:500] if title else "",
-        "company": company[:255] if company else "",
-        "location": location[:255] if location else "",
+        "title": job_payload["title"],
+        "company": job_payload["company"],
+        "location": job_payload["location"],
         "description": description[:5000] if description else "",
         "url": url,
         "source": source,
