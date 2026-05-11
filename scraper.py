@@ -233,6 +233,20 @@ def scrape_ejobs():
                         if title and job_url and "ejobs.ro/user/locuri-de-munca/" in job_url:
                             jobs.append({"title": title, "url": job_url})
 
+            # Fallback: extract from inline JSON-like blocks if ld+json didn't include list items
+            if not jobs:
+                pattern = r'"name":"(.*?)","id":"(https:\\/\\/www\.ejobs\.ro\\/user\\/locuri-de-munca\\/[^"]+)"'
+                for match in re.finditer(pattern, r.text):
+                    raw_title = match.group(1)
+                    raw_url = match.group(2)
+                    try:
+                        title = json.loads(f"\"{raw_title}\"")
+                    except Exception:
+                        title = raw_title
+                    job_url = raw_url.replace("\\/", "/")
+                    if title and job_url:
+                        jobs.append({"title": title, "url": job_url})
+
             unique = {}
             for j in jobs:
                 unique[j["url"]] = j
