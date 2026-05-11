@@ -108,8 +108,9 @@ class GoogleSheetWriter:
         if not values:
             self.worksheet.append_row(SHEET_HEADERS, value_input_option="USER_ENTERED")
         elif values[0] != SHEET_HEADERS:
-            # Keep existing sheet, but make sure we can still dedupe by URL column if present.
-            pass
+            # Existing data without headers: insert header row at top.
+            self.worksheet.insert_row(SHEET_HEADERS, index=1, value_input_option="USER_ENTERED")
+            values = self.worksheet.get_all_values()
 
         url_col_idx = 8  # 1-based index of "url" in SHEET_HEADERS
         for row in values[1:]:
