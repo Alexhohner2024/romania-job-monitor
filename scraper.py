@@ -7,6 +7,7 @@ from datetime import datetime
 import time
 import re
 import unicodedata
+import json
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -200,55 +201,71 @@ def scrape_ejobs():
         "automation", "daune asigurari", "it administrator", "crm",
     ]
     count = 0
+    skip_stats = {"not_remote": 0, "not_relevant": 0, "advanced_english": 0, "agent_role": 0, "other": 0}
     for query in searches:
         try:
             url = f"https://www.ejobs.ro/locuri-de-munca/remote/?search={requests.utils.quote(query)}"
             r = requests.get(url, headers=headers, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
-
-            # Try multiple selector patterns
-            jobs = (
-                soup.select("div[class*='job-item']") or
-                soup.select("article[class*='job']") or
-                soup.select("li[class*='job']") or
-                soup.select("div[class*='JobCard']") or
-                soup.select("div[data-cy='job-card']") or
-                soup.select("a[href*='/job/']")
-            )
-
-            print(f"  [{query}] found {len(jobs)} raw items")
-            if jobs:
-                print(f"  DEBUG first item classes: {jobs[0].get('class')}")
-                print(f"  DEBUG first item snippet: {str(jobs[0])[:300]}")
-
-            for job in jobs[:20]:
-                title_el = (
-                    job.select_one("h2 a") or job.select_one("h3 a") or
-                    job.select_one("a[class*='title']") or job.select_one("a[class*='job-title']") or
-                    (job if job.name == "a" else None)
-                )
-                if not title_el:
+            jobs = []
+            for script in soup.select("script[type='application/ld+json']"):
+                raw = (script.string or script.get_text() or "").strip()
+                if not raw:
                     continue
-                title = title_el.get_text(strip=True)
-                job_url = title_el.get("href", "")
-                if job_url and not job_url.startswith("http"):
-                    job_url = "https://www.ejobs.ro" + job_url
-                company_el = job.select_one("[class*='company']") or job.select_one("[class*='employer']")
-                company = company_el.get_text(strip=True) if company_el else ""
-                location_el = job.select_one("[class*='location']") or job.select_one("[class*='city']")
-                location = location_el.get_text(strip=True) if location_el else "Remote"
-                desc_el = job.select_one("p") or job.select_one("[class*='description']")
-                description = desc_el.get_text(strip=True) if desc_el else title
-
-                if should_skip(title, description, location):
-                    print(f"  SKIP: {title[:50]} | loc:{location[:30]}")
+                try:
+                    payload = json.loads(raw)
+                except Exception:
                     continue
-                save_job(title, company, location, description, job_url, "ejobs.ro")
+
+                items = payload if isinstance(payload, list) else [payload]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    elements = item.get("itemListElement", [])
+                    if not isinstance(elements, list):
+                        continue
+                    for el in elements:
+                        if not isinstance(el, dict):
+                            continue
+                        sub = el.get("item", {}) if isinstance(el.get("item", {}), dict) else {}
+                        title = sub.get("name", "") or el.get("name", "")
+                        job_url = sub.get("id", "") or el.get("url", "")
+                        if title and job_url and "ejobs.ro/user/locuri-de-munca/" in job_url:
+                            jobs.append({"title": title, "url": job_url})
+
+            unique = {}
+            for j in jobs:
+                unique[j["url"]] = j
+            jobs = list(unique.values())
+            print(f"  [{query}] found {len(jobs)} json-ld jobs")
+
+            for job in jobs:
+                title = job["title"].strip()
+                job_url = job["url"].strip()
+                if not title or not job_url:
+                    continue
+                location = "Remote"
+                description = title
+                combined = (title + " " + description + " " + location).lower()
+                if not is_remote(combined):
+                    skip_stats["not_remote"] += 1
+                    continue
+                if not is_relevant(title, description):
+                    skip_stats["not_relevant"] += 1
+                    continue
+                if requires_advanced_english(combined):
+                    skip_stats["advanced_english"] += 1
+                    continue
+                if is_insurance_agent_role(title, description):
+                    skip_stats["agent_role"] += 1
+                    continue
+                save_job(title, "", location, description, job_url, "ejobs.ro")
                 count += 1
             time.sleep(2)
         except Exception as e:
             print(f"  ERROR [{query}]: {e}")
     print(f"  → {count} new relevant jobs saved")
+    print(f"  skip stats: {skip_stats}")
 
 
 # ── bestjobs.ro ───────────────────────────────────────────────────────────────
@@ -266,34 +283,19 @@ def scrape_bestjobs():
             url = f"https://www.bestjobs.eu/ro/locuri-de-munca?remote=1&search_text={requests.utils.quote(query)}"
             r = requests.get(url, headers=headers, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
+            links = soup.select("a[href*='/ro/locuri-de-munca/']")
+            print(f"  [{query}] found {len(links)} candidate links")
 
-            jobs = (
-                soup.select("div[class*='card']") or
-                soup.select("article") or
-                soup.select("li[class*='job']") or
-                soup.select("div[class*='job']")
-            )
-            print(f"  [{query}] found {len(jobs)} raw items")
-
-            for job in jobs[:20]:
-                title_el = (
-                    job.select_one("h2 a") or job.select_one("h3 a") or
-                    job.select_one("a[class*='title']") or job.select_one("a[class*='job']")
-                )
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True)
+            for link in links:
+                title = link.get_text(strip=True)
                 if len(title) < 3:
                     continue
-                job_url = title_el.get("href", "")
+                job_url = link.get("href", "")
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.bestjobs.eu" + job_url
-                company_el = job.select_one("[class*='company']") or job.select_one("[class*='employer']")
-                company = company_el.get_text(strip=True) if company_el else ""
-                location_el = job.select_one("[class*='location']") or job.select_one("[class*='city']")
-                location = location_el.get_text(strip=True) if location_el else "Remote"
-                desc_el = job.select_one("p") or job.select_one("[class*='description']")
-                description = desc_el.get_text(strip=True) if desc_el else title
+                company = ""
+                location = "Remote"
+                description = title
 
                 if should_skip(title, description, location):
                     continue
@@ -320,33 +322,19 @@ def scrape_hipo():
             url = f"https://www.hipo.ro/locuri-de-munca/cautare/{requests.utils.quote(query)}/?work_type=remote"
             r = requests.get(url, headers=headers, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
+            links = soup.select("a[href*='/locuri-de-munca/']")
+            print(f"  [{query}] found {len(links)} candidate links")
 
-            jobs = (
-                soup.select("div[class*='job']") or
-                soup.select("article") or
-                soup.select("li[class*='job']")
-            )
-            print(f"  [{query}] found {len(jobs)} raw items")
-
-            for job in jobs[:20]:
-                title_el = (
-                    job.select_one("h2 a") or job.select_one("h3 a") or
-                    job.select_one("a[class*='title']") or job.select_one("a[class*='name']")
-                )
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True)
+            for link in links:
+                title = link.get_text(strip=True)
                 if len(title) < 3:
                     continue
-                job_url = title_el.get("href", "")
+                job_url = link.get("href", "")
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.hipo.ro" + job_url
-                company_el = job.select_one("[class*='company']") or job.select_one("[class*='employer']")
-                company = company_el.get_text(strip=True) if company_el else ""
-                location_el = job.select_one("[class*='location']") or job.select_one("[class*='city']")
-                location = location_el.get_text(strip=True) if location_el else "Remote"
-                desc_el = job.select_one("p") or job.select_one("[class*='description']")
-                description = desc_el.get_text(strip=True) if desc_el else title
+                company = ""
+                location = "Remote"
+                description = title
 
                 if should_skip(title, description, location):
                     continue
