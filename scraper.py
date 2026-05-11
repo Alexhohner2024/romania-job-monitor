@@ -9,12 +9,18 @@ import re
 import unicodedata
 import json
 import gspread
+try:
+    import google.generativeai as genai
+    _genai_available = True
+except ImportError:
+    _genai_available = False
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 # ── Keywords ────────────────────────────────────────────────────────────────
 
@@ -69,24 +75,74 @@ SHEET_HEADERS = [
 
 
 def extract_salary_value(text: str) -> str:
+    """Extract salary from text, supporting $50k, €3000, RON 5000, ranges, etc."""
     if not text:
         return ""
-    clean = text.replace(",", " ").replace(".", " ")
+
+    # Detect currency symbol/word
+    currency = ""
+    if "$" in text or re.search(r"\bUSD\b", text, re.I):
+        currency = "USD"
+    elif "€" in text or re.search(r"\bEUR\b", text, re.I):
+        currency = "EUR"
+    elif re.search(r"\bRON\b|\bLEI\b", text, re.I):
+        currency = "RON"
+    elif "£" in text or re.search(r"\bGBP\b", text, re.I):
+        currency = "GBP"
+
+    # Strip currency symbols and normalize separators
+    clean = re.sub(r"[$€£]", "", text)
+    clean = clean.replace(",", "").replace("\u00a0", "").replace("\u202f", "")
+
+    # Expand k/K suffix: 50k → 50000
+    def expand_k(m):
+        val = float(m.group(1))
+        return str(int(val * 1000))
+    clean = re.sub(r"(\d+(?:\.\d+)?)[kK]\b", expand_k, clean)
+
     # Range: 2900 - 6000
     m_range = re.search(r"\b(\d{3,6})\s*[-–]\s*(\d{3,6})\b", clean)
     if m_range:
-        return f"{m_range.group(1)}-{m_range.group(2)}"
+        result = f"{m_range.group(1)}-{m_range.group(2)}"
+        return f"{result} {currency}".strip() if currency else result
+
     # Single value: 4500
     m_single = re.search(r"\b(\d{3,6})\b", clean)
     if m_single:
-        return m_single.group(1)
+        result = m_single.group(1)
+        return f"{result} {currency}".strip() if currency else result
+
     return ""
 
 
 def build_short_description_ru(title: str, location: str, salary: str) -> str:
+    """Generate a short Russian job description using Gemini API, with template fallback."""
     loc = location or "Remote"
     salary_part = salary if salary else "не указана"
-    return f"💼 {title}. 🌍 Локация: {loc}. 💰 Зарплата: {salary_part}."
+    fallback = f"💼 {title}. 🌍 Локация: {loc}. 💰 Зарплата: {salary_part}."
+
+    if not GEMINI_API_KEY or not _genai_available:
+        return fallback
+
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = (
+            f"Переведи название вакансии на русский язык и напиши одно короткое предложение "
+            f"(до 80 символов), описывающее эту работу на русском языке. "
+            f"Вакансия: '{title}'. Локация: '{loc}'. Зарплата: '{salary_part}'.\n"
+            f"Ответь строго в одну строку в формате (без лишних слов, без переносов):\n"
+            f"💼 <название на русском>. <1 предложение о работе>. 🌍 Локация: {loc}. 💰 Зарплата: {salary_part}."
+        )
+        response = model.generate_content(prompt)
+        result = response.text.strip()
+        if result and len(result) > 10:
+            print(f"  🔤 Translated: {result[:90]}")
+            return result
+    except Exception as e:
+        print(f"  WARN [gemini]: {e}")
+
+    return fallback
 
 
 class GoogleSheetWriter:
@@ -156,6 +212,19 @@ def is_remote(text: str) -> bool:
     normalized = normalize_text(text)
     return any(normalize_text(kw) in normalized for kw in REMOTE_KEYWORDS)
 
+
+# Locations allowed for global (force_remote) sources
+_ALLOWED_GEO = {"worldwide", "anywhere", "global", "remote", "romania", "international", "eu", "europe"}
+
+def is_geo_allowed(location: str) -> bool:
+    """For global sources: allow only Romania, worldwide/anywhere, or unspecified location."""
+    if not location or not location.strip():
+        return True
+    loc = normalize_text(location)
+    if "romania" in loc:
+        return True
+    return any(term in loc for term in _ALLOWED_GEO)
+
 def is_relevant(title: str, description: str) -> bool:
     combined = (title + " " + description).lower()
     return any(kw in combined for kw in ALL_KEYWORDS)
@@ -171,6 +240,9 @@ def is_insurance_agent_role(title: str, description: str) -> bool:
 def should_skip(title: str, description: str, location: str = "", force_remote: bool = False) -> bool:
     combined = (title + " " + description + " " + location).lower()
     if not force_remote and not is_remote(combined):
+        return True
+    # For global sources (force_remote=True), only allow Romania / worldwide / anywhere
+    if force_remote and not is_geo_allowed(location):
         return True
     if not is_relevant(title, description):
         return True
