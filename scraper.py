@@ -142,47 +142,91 @@ def scrape_rss(feed_url: str, source_name: str):
 
 
 def scrape_remotive():
-    scrape_rss("https://remotive.com/remote-jobs/rss/all", "remotive.com")
+    scrape_rss("https://remotive.com/feed", "remotive.com")
 
 def scrape_jobicy():
-    keywords = "it-support,technical-support,automation,crm,insurance"
-    url = f"https://jobicy.com/?feed=job_feed&job_categories=technical-support,supporting&job_types=full-time&search_keywords=support+automation+crm"
-    scrape_rss(url, "jobicy.com")
+    print("\n[jobicy.com] Fetching API...")
+    try:
+        searches = ["support", "automation", "crm", "helpdesk", "insurance"]
+        count = 0
+        seen_ids = set()
+        for tag in searches:
+            url = f"https://jobicy.com/api/v2/remote-jobs?count=50&tag={tag}"
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            data = r.json()
+            jobs = data.get("jobs", [])
+            for job in jobs:
+                job_id = job.get("id")
+                if job_id in seen_ids:
+                    continue
+                seen_ids.add(job_id)
+                title = job.get("jobTitle", "")
+                company = job.get("companyName", "")
+                location = job.get("jobGeo", "Anywhere")
+                description = re.sub(r"<[^>]+>", " ", job.get("jobDescription", ""))
+                url_job = job.get("url", "")
+                date_posted = job.get("pubDate", "")
+                if should_skip(title, description, location):
+                    continue
+                save_job(title, company, location, description, url_job, "jobicy.com", date_posted)
+                count += 1
+            time.sleep(1)
+        print(f"  → {count} new relevant jobs found")
+    except Exception as e:
+        print(f"  ERROR: {e}")
 
 def scrape_jobscollider():
-    scrape_rss("https://jobscollider.com/remote-jobs/rss", "jobscollider.com")
+    scrape_rss("https://jobscollider.com/remote-jobs/feed", "jobscollider.com")
 
 
 # ── ejobs.ro ─────────────────────────────────────────────────────────────────
 
 def scrape_ejobs():
     print("\n[ejobs.ro] Fetching...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ro-RO,ro;q=0.9,en;q=0.8",
+    }
     searches = [
-        "it+support+remote", "technical+support+remote",
-        "helpdesk+remote", "automation+remote", "daune+remote",
-        "it+administrator+remote", "crm+remote",
+        "it support", "technical support", "helpdesk",
+        "automation", "daune asigurari", "it administrator", "crm",
     ]
     count = 0
     for query in searches:
         try:
-            url = f"https://www.ejobs.ro/locuri-de-munca/?search={query}"
+            url = f"https://www.ejobs.ro/locuri-de-munca/remote/?search={requests.utils.quote(query)}"
             r = requests.get(url, headers=headers, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
-            jobs = soup.select("article.job-item, div.job-listing, li.job-item")
-            for job in jobs:
-                title_el = job.select_one("h2 a, h3 a, .job-title a")
+
+            # Try multiple selector patterns
+            jobs = (
+                soup.select("div[class*='job-item']") or
+                soup.select("article[class*='job']") or
+                soup.select("li[class*='job']") or
+                soup.select("div[class*='JobCard']") or
+                soup.select("div[data-cy='job-card']") or
+                soup.select("a[href*='/job/']")
+            )
+
+            print(f"  [{query}] found {len(jobs)} raw items")
+
+            for job in jobs[:20]:
+                title_el = (
+                    job.select_one("h2 a") or job.select_one("h3 a") or
+                    job.select_one("a[class*='title']") or job.select_one("a[class*='job-title']") or
+                    (job if job.name == "a" else None)
+                )
                 if not title_el:
                     continue
                 title = title_el.get_text(strip=True)
                 job_url = title_el.get("href", "")
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.ejobs.ro" + job_url
-                company_el = job.select_one(".company-name, .employer-name")
+                company_el = job.select_one("[class*='company']") or job.select_one("[class*='employer']")
                 company = company_el.get_text(strip=True) if company_el else ""
-                location_el = job.select_one(".location, .job-location")
-                location = location_el.get_text(strip=True) if location_el else ""
-                desc_el = job.select_one(".job-description, .description, p")
+                location_el = job.select_one("[class*='location']") or job.select_one("[class*='city']")
+                location = location_el.get_text(strip=True) if location_el else "Remote"
+                desc_el = job.select_one("p") or job.select_one("[class*='description']")
                 description = desc_el.get_text(strip=True) if desc_el else title
 
                 if should_skip(title, description, location):
@@ -192,38 +236,51 @@ def scrape_ejobs():
             time.sleep(2)
         except Exception as e:
             print(f"  ERROR [{query}]: {e}")
-    print(f"  → {count} new relevant jobs found")
+    print(f"  → {count} new relevant jobs saved")
 
 
 # ── bestjobs.ro ───────────────────────────────────────────────────────────────
 
 def scrape_bestjobs():
     print("\n[bestjobs.ro] Fetching...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    searches = [
-        "it-support", "technical-support", "helpdesk",
-        "automation", "daune", "crm", "it-administrator",
-    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ro-RO,ro;q=0.9",
+    }
+    searches = ["it-support", "technical-support", "helpdesk", "automation", "daune", "crm"]
     count = 0
     for query in searches:
         try:
-            url = f"https://www.bestjobs.eu/ro/locuri-de-munca?search={query}&remote=1"
+            url = f"https://www.bestjobs.eu/ro/locuri-de-munca?remote=1&search_text={requests.utils.quote(query)}"
             r = requests.get(url, headers=headers, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
-            jobs = soup.select("div.job-card, article.job, li.job")
-            for job in jobs:
-                title_el = job.select_one("h2 a, h3 a, .title a, a.job-title")
+
+            jobs = (
+                soup.select("div[class*='card']") or
+                soup.select("article") or
+                soup.select("li[class*='job']") or
+                soup.select("div[class*='job']")
+            )
+            print(f"  [{query}] found {len(jobs)} raw items")
+
+            for job in jobs[:20]:
+                title_el = (
+                    job.select_one("h2 a") or job.select_one("h3 a") or
+                    job.select_one("a[class*='title']") or job.select_one("a[class*='job']")
+                )
                 if not title_el:
                     continue
                 title = title_el.get_text(strip=True)
+                if len(title) < 3:
+                    continue
                 job_url = title_el.get("href", "")
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.bestjobs.eu" + job_url
-                company_el = job.select_one(".company, .employer")
+                company_el = job.select_one("[class*='company']") or job.select_one("[class*='employer']")
                 company = company_el.get_text(strip=True) if company_el else ""
-                location_el = job.select_one(".location, .city")
+                location_el = job.select_one("[class*='location']") or job.select_one("[class*='city']")
                 location = location_el.get_text(strip=True) if location_el else "Remote"
-                desc_el = job.select_one(".description, p")
+                desc_el = job.select_one("p") or job.select_one("[class*='description']")
                 description = desc_el.get_text(strip=True) if desc_el else title
 
                 if should_skip(title, description, location):
@@ -233,35 +290,50 @@ def scrape_bestjobs():
             time.sleep(2)
         except Exception as e:
             print(f"  ERROR [{query}]: {e}")
-    print(f"  → {count} new relevant jobs found")
+    print(f"  → {count} new relevant jobs saved")
 
 
 # ── hipo.ro ───────────────────────────────────────────────────────────────────
 
 def scrape_hipo():
     print("\n[hipo.ro] Fetching...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    searches = ["it+support", "technical+support", "helpdesk", "automation", "daune"]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ro-RO,ro;q=0.9",
+    }
+    searches = ["it support", "technical support", "helpdesk", "automation", "daune"]
     count = 0
     for query in searches:
         try:
-            url = f"https://www.hipo.ro/locuri-de-munca/cautare/{query}/?remote=1"
+            url = f"https://www.hipo.ro/locuri-de-munca/cautare/{requests.utils.quote(query)}/?work_type=remote"
             r = requests.get(url, headers=headers, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
-            jobs = soup.select("div.job-item, article.job, li.job-listing")
-            for job in jobs:
-                title_el = job.select_one("h2 a, h3 a, .job-name a")
+
+            jobs = (
+                soup.select("div[class*='job']") or
+                soup.select("article") or
+                soup.select("li[class*='job']")
+            )
+            print(f"  [{query}] found {len(jobs)} raw items")
+
+            for job in jobs[:20]:
+                title_el = (
+                    job.select_one("h2 a") or job.select_one("h3 a") or
+                    job.select_one("a[class*='title']") or job.select_one("a[class*='name']")
+                )
                 if not title_el:
                     continue
                 title = title_el.get_text(strip=True)
+                if len(title) < 3:
+                    continue
                 job_url = title_el.get("href", "")
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.hipo.ro" + job_url
-                company_el = job.select_one(".company-name, .employer")
+                company_el = job.select_one("[class*='company']") or job.select_one("[class*='employer']")
                 company = company_el.get_text(strip=True) if company_el else ""
-                location_el = job.select_one(".location")
+                location_el = job.select_one("[class*='location']") or job.select_one("[class*='city']")
                 location = location_el.get_text(strip=True) if location_el else "Remote"
-                desc_el = job.select_one("p, .description")
+                desc_el = job.select_one("p") or job.select_one("[class*='description']")
                 description = desc_el.get_text(strip=True) if desc_el else title
 
                 if should_skip(title, description, location):
@@ -271,7 +343,7 @@ def scrape_hipo():
             time.sleep(2)
         except Exception as e:
             print(f"  ERROR [{query}]: {e}")
-    print(f"  → {count} new relevant jobs found")
+    print(f"  → {count} new relevant jobs saved")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
