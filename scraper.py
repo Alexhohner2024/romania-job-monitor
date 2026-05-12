@@ -428,17 +428,34 @@ def scrape_ejobs():
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    elements = item.get("itemListElement", [])
-                    if not isinstance(elements, list):
-                        continue
-                    for el in elements:
-                        if not isinstance(el, dict):
-                            continue
-                        sub = el.get("item", {}) if isinstance(el.get("item", {}), dict) else {}
-                        title = sub.get("name", "") or el.get("name", "")
-                        job_url = sub.get("id", "") or el.get("url", "")
-                        if title and job_url and "ejobs.ro/user/locuri-de-munca/" in job_url:
-                            jobs.append({"title": title, "url": job_url})
+                    candidate_lists = []
+
+                    direct_elements = item.get("itemListElement", [])
+                    if isinstance(direct_elements, list):
+                        candidate_lists.append(direct_elements)
+
+                    main_entity = item.get("mainEntity", {})
+                    if isinstance(main_entity, dict) and isinstance(main_entity.get("itemListElement"), list):
+                        candidate_lists.append(main_entity.get("itemListElement", []))
+
+                    graph_nodes = item.get("@graph", [])
+                    if isinstance(graph_nodes, list):
+                        for node in graph_nodes:
+                            if isinstance(node, dict) and isinstance(node.get("itemListElement"), list):
+                                candidate_lists.append(node.get("itemListElement", []))
+                            node_main_entity = node.get("mainEntity", {}) if isinstance(node, dict) else {}
+                            if isinstance(node_main_entity, dict) and isinstance(node_main_entity.get("itemListElement"), list):
+                                candidate_lists.append(node_main_entity.get("itemListElement", []))
+
+                    for elements in candidate_lists:
+                        for el in elements:
+                            if not isinstance(el, dict):
+                                continue
+                            sub = el.get("item", {}) if isinstance(el.get("item", {}), dict) else {}
+                            title = sub.get("name", "") or el.get("name", "")
+                            job_url = sub.get("id", "") or el.get("url", "")
+                            if title and job_url and "ejobs.ro/user/locuri-de-munca/" in job_url:
+                                jobs.append({"title": title, "url": job_url})
 
             # Fallback: extract from inline JSON-like blocks if ld+json didn't include list items
             if not jobs:
