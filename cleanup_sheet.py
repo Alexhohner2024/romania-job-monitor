@@ -19,13 +19,7 @@ FOREIGN_LANGUAGE_MARKERS = [
 ]
 
 ALLOWED_REMOTE_LOCATION_TOKENS = [
-    "remote",
-    "anywhere",
-    "worldwide",
     "romania",
-    "europe",
-    "eu",
-    "international",
 ]
 
 
@@ -36,12 +30,7 @@ def needs_removal(title: str, description: str) -> bool:
 
 def is_location_allowed(location: str, title: str, description: str) -> bool:
     loc = (location or "").strip().lower()
-    combined = f" {title} {description} ".lower()
-
-    if not loc:
-        return any(token in combined for token in ALLOWED_REMOTE_LOCATION_TOKENS)
-
-    return any(token in loc for token in ALLOWED_REMOTE_LOCATION_TOKENS)
+    return "romania" in loc
 
 
 def main() -> None:

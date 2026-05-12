@@ -312,10 +312,16 @@ def is_remote(text: str) -> bool:
 _ALLOWED_GEO = {"worldwide", "anywhere", "global", "remote", "romania", "international", "eu", "europe"}
 
 def is_geo_allowed(location: str) -> bool:
-    """For global sources: allow only Romania, worldwide/anywhere, or unspecified location."""
+    """For global sources: allow only Romania when STRICT_GEO_FILTER=True, otherwise allow Romania/worldwide/anywhere."""
     if not location or not location.strip():
         return True
     loc = normalize_text(location)
+    
+    # If strict geo filter is enabled, only allow Romania
+    if STRICT_GEO_FILTER:
+        return "romania" in loc
+    
+    # Original logic for relaxed filter
     if "romania" in loc:
         return True
     return any(term in loc for term in _ALLOWED_GEO)
