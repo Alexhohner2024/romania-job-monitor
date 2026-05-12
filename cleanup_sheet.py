@@ -18,10 +18,30 @@ FOREIGN_LANGUAGE_MARKERS = [
     " with turkish", "turkish ", "limba turca", "turca",
 ]
 
+ALLOWED_REMOTE_LOCATION_TOKENS = [
+    "remote",
+    "anywhere",
+    "worldwide",
+    "romania",
+    "europe",
+    "eu",
+    "international",
+]
+
 
 def needs_removal(title: str, description: str) -> bool:
     combined = f" {title} {description} ".lower()
     return any(marker in combined for marker in FOREIGN_LANGUAGE_MARKERS)
+
+
+def is_location_allowed(location: str, title: str, description: str) -> bool:
+    loc = (location or "").strip().lower()
+    combined = f" {title} {description} ".lower()
+
+    if not loc:
+        return any(token in combined for token in ALLOWED_REMOTE_LOCATION_TOKENS)
+
+    return any(token in loc for token in ALLOWED_REMOTE_LOCATION_TOKENS)
 
 
 def main() -> None:
@@ -50,12 +70,17 @@ def main() -> None:
         desc_idx = header.index("short_description_ru")
     except ValueError:
         desc_idx = 6
+    try:
+        location_idx = header.index("location")
+    except ValueError:
+        location_idx = 4
 
     to_delete = []
     for i, row in enumerate(rows, start=2):
         title = row[title_idx] if len(row) > title_idx else ""
         description = row[desc_idx] if len(row) > desc_idx else ""
-        if needs_removal(title, description):
+        location = row[location_idx] if len(row) > location_idx else ""
+        if needs_removal(title, description) or not is_location_allowed(location, title, description):
             to_delete.append((i, title))
 
     if not to_delete:
