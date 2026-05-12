@@ -45,6 +45,21 @@ INSURANCE_KEYWORDS = [
 
 ALL_KEYWORDS = IT_KEYWORDS + INSURANCE_KEYWORDS
 
+# Individual significant words extracted from ALL_KEYWORDS for broader matching
+_RELEVANT_WORDS = {
+    w for phrase in ALL_KEYWORDS for w in phrase.split()
+    if len(w) >= 4 or w in {"it", "ai"}
+}
+# Add Romanian variations and related terms
+_RELEVANT_WORDS.update({
+    "suport", "tehnic", "support", "technic", "tech", "help", "desk",
+    "service", "admin", "administra", "system", "desktop", "automat",
+    "specialist", "consultant", "integrari", "procese", "inovare",
+    "daune", "asigur", "claims", "insurance", "underwrit",
+    "operațiuni", "operatiuni", "operational", "analyst", "analist",
+    "coordonator", "coordinat", "proiect", "project",
+})
+
 REMOTE_KEYWORDS = [
     "remote", "online", "work from home", "wfh", "de acasă", "de acasa",
     "la distanță", "la distanta", "telemuncă", "telemunca", "hybrid", "hibrid",
@@ -330,6 +345,13 @@ def is_relevant(title: str, description: str) -> bool:
     combined = (title + " " + description).lower()
     return any(kw in combined for kw in ALL_KEYWORDS)
 
+def is_broadly_relevant(title: str, description: str) -> bool:
+    """More lenient relevance: checks for significant keyword words in the title."""
+    if is_relevant(title, description):
+        return True
+    title_lower = normalize_text(title)
+    return any(w in title_lower for w in _RELEVANT_WORDS)
+
 def requires_advanced_english(text: str) -> bool:
     text = text.lower()
     return any(kw in text for kw in ENGLISH_ADVANCED_KEYWORDS)
@@ -350,7 +372,10 @@ def should_skip(title: str, description: str, location: str = "", force_remote: 
     # For global sources (force_remote=True), only allow Romania / worldwide / anywhere
     if force_remote and STRICT_GEO_FILTER and not is_geo_allowed(location):
         return True
-    if not is_relevant(title, description):
+    # For local sources (non-force_remote), use broader relevance; for global, strict
+    if force_remote and not is_relevant(title, description):
+        return True
+    if not force_remote and not is_broadly_relevant(title, description):
         return True
     if requires_advanced_english(combined):
         return True
@@ -595,7 +620,7 @@ def scrape_ejobs():
                 if not is_remote(combined):
                     skip_stats["not_remote"] += 1
                     continue
-                if not is_relevant(title, description):
+                if not is_broadly_relevant(title, description):
                     skip_stats["not_relevant"] += 1
                     continue
                 if requires_advanced_english(combined):
