@@ -21,6 +21,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+STRICT_GEO_FILTER = os.environ.get("STRICT_GEO_FILTER", "0").strip().lower() in {"1", "true", "yes"}
 
 # ── Keywords ────────────────────────────────────────────────────────────────
 
@@ -341,7 +342,7 @@ def should_skip(title: str, description: str, location: str = "", force_remote: 
     if not force_remote and not is_remote(combined):
         return True
     # For global sources (force_remote=True), only allow Romania / worldwide / anywhere
-    if force_remote and not is_geo_allowed(location):
+    if force_remote and STRICT_GEO_FILTER and not is_geo_allowed(location):
         return True
     if not is_relevant(title, description):
         return True
@@ -440,11 +441,15 @@ def scrape_remotive():
 def scrape_jobicy():
     print("\n[jobicy.com] Fetching API...")
     try:
-        searches = ["support", "automation", "crm", "helpdesk", "insurance"]
+        searches = [
+            "support", "customer-support", "technical-support", "it-support",
+            "automation", "crm", "helpdesk", "service-desk", "insurance",
+            "claims", "operations",
+        ]
         count = 0
         seen_ids = set()
         for tag in searches:
-            url = f"https://jobicy.com/api/v2/remote-jobs?count=50&tag={tag}"
+            url = f"https://jobicy.com/api/v2/remote-jobs?count=100&tag={tag}"
             r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
             data = r.json()
             jobs = data.get("jobs", [])
@@ -488,59 +493,63 @@ def scrape_ejobs():
     skip_stats = {"not_remote": 0, "not_relevant": 0, "advanced_english": 0, "foreign_language": 0, "agent_role": 0, "other": 0}
     for query in searches:
         try:
-            url = f"https://www.ejobs.ro/locuri-de-munca/remote/?search={requests.utils.quote(query)}"
-            r = requests.get(url, headers=headers, timeout=15)
-            soup = BeautifulSoup(r.text, "html.parser")
             jobs = []
             anchor_samples = []
-            for a in soup.select("a[href]"):
-                href = (a.get("href") or "").strip()
-                text = a.get_text(" ", strip=True)
-                if href and text and ("locuri-de-munca" in href or "remote" in href):
-                    anchor_samples.append((href, text))
-                    if len(anchor_samples) >= 5:
-                        break
-            for script in soup.select("script[type='application/ld+json']"):
-                raw = (script.string or script.get_text() or "").strip()
-                if not raw:
-                    continue
-                try:
-                    payload = json.loads(raw)
-                except Exception:
-                    continue
+            for page in range(1, 4):
+                page_suffix = "" if page == 1 else f"/pagina{page}"
+                url = f"https://www.ejobs.ro/locuri-de-munca/remote{page_suffix}/?search={requests.utils.quote(query)}"
+                r = requests.get(url, headers=headers, timeout=15)
+                soup = BeautifulSoup(r.text, "html.parser")
 
-                items = payload if isinstance(payload, list) else [payload]
-                for item in items:
-                    if not isinstance(item, dict):
+                for a in soup.select("a[href]"):
+                    href = (a.get("href") or "").strip()
+                    text = a.get_text(" ", strip=True)
+                    if href and text and ("locuri-de-munca" in href or "remote" in href):
+                        anchor_samples.append((href, text))
+                        if len(anchor_samples) >= 5:
+                            break
+
+                for script in soup.select("script[type='application/ld+json']"):
+                    raw = (script.string or script.get_text() or "").strip()
+                    if not raw:
                         continue
-                    candidate_lists = []
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
+                        continue
 
-                    direct_elements = item.get("itemListElement", [])
-                    if isinstance(direct_elements, list):
-                        candidate_lists.append(direct_elements)
+                    items = payload if isinstance(payload, list) else [payload]
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        candidate_lists = []
 
-                    main_entity = item.get("mainEntity", {})
-                    if isinstance(main_entity, dict) and isinstance(main_entity.get("itemListElement"), list):
-                        candidate_lists.append(main_entity.get("itemListElement", []))
+                        direct_elements = item.get("itemListElement", [])
+                        if isinstance(direct_elements, list):
+                            candidate_lists.append(direct_elements)
 
-                    graph_nodes = item.get("@graph", [])
-                    if isinstance(graph_nodes, list):
-                        for node in graph_nodes:
-                            if isinstance(node, dict) and isinstance(node.get("itemListElement"), list):
-                                candidate_lists.append(node.get("itemListElement", []))
-                            node_main_entity = node.get("mainEntity", {}) if isinstance(node, dict) else {}
-                            if isinstance(node_main_entity, dict) and isinstance(node_main_entity.get("itemListElement"), list):
-                                candidate_lists.append(node_main_entity.get("itemListElement", []))
+                        main_entity = item.get("mainEntity", {})
+                        if isinstance(main_entity, dict) and isinstance(main_entity.get("itemListElement"), list):
+                            candidate_lists.append(main_entity.get("itemListElement", []))
 
-                    for elements in candidate_lists:
-                        for el in elements:
-                            if not isinstance(el, dict):
-                                continue
-                            sub = el.get("item", {}) if isinstance(el.get("item", {}), dict) else {}
-                            title = sub.get("name", "") or el.get("name", "")
-                            job_url = sub.get("id", "") or el.get("url", "")
-                            if title and job_url and "ejobs.ro/user/locuri-de-munca/" in job_url:
-                                jobs.append({"title": title, "url": job_url})
+                        graph_nodes = item.get("@graph", [])
+                        if isinstance(graph_nodes, list):
+                            for node in graph_nodes:
+                                if isinstance(node, dict) and isinstance(node.get("itemListElement"), list):
+                                    candidate_lists.append(node.get("itemListElement", []))
+                                node_main_entity = node.get("mainEntity", {}) if isinstance(node, dict) else {}
+                                if isinstance(node_main_entity, dict) and isinstance(node_main_entity.get("itemListElement"), list):
+                                    candidate_lists.append(node_main_entity.get("itemListElement", []))
+
+                        for elements in candidate_lists:
+                            for el in elements:
+                                if not isinstance(el, dict):
+                                    continue
+                                sub = el.get("item", {}) if isinstance(el.get("item", {}), dict) else {}
+                                title = sub.get("name", "") or el.get("name", "")
+                                job_url = sub.get("id", "") or el.get("url", "")
+                                if title and job_url and "ejobs.ro/user/locuri-de-munca/" in job_url:
+                                    jobs.append({"title": title, "url": job_url})
 
             # Fallback: extract from inline JSON-like blocks if ld+json didn't include list items
             if not jobs:
