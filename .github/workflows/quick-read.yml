@@ -1,0 +1,27 @@
+name: Quick Read Sheet
+on: workflow_dispatch
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install gspread
+      - name: Read sheet
+        env:
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python3 -c "
+import json, os
+import gspread
+creds = json.loads(os.environ['GOOGLE_SERVICE_ACCOUNT_JSON'])
+client = gspread.service_account_from_dict(creds)
+ws = client.open_by_key(os.environ['GOOGLE_SHEET_ID']).sheet1
+values = ws.get_all_values()
+print(f'ROWS: {len(values)}')
+for i, row in enumerate(values):
+    print(f'{i}: {row}')
+"
