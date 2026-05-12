@@ -56,6 +56,21 @@ ENGLISH_ADVANCED_KEYWORDS = [
     "limba engleza - avansat", "engleza avansata", "engleza fluenta",
 ]
 
+# Exclude vacancies requiring non-English languages (Dutch, German, etc.).
+FOREIGN_LANGUAGE_EXCLUDE = [
+    " with dutch", "dutch ", "limba olandeza", "olandeza",
+    " with german", "german ", "limba germana", "germana",
+    " with french", "french ", "limba franceza", "franceza",
+    " with italian", "italian ", "limba italiana", "italiana",
+    " with spanish", "spanish ", "limba spaniola", "spaniola",
+    " with portuguese", "portuguese ", "limba portugheza", "portugheza",
+    " with hungarian", "hungarian ", "limba maghiara", "maghiara",
+    " with polish", "polish ", "limba poloneza", "poloneza",
+    " with czech", "czech ", "limba ceha", "ceha",
+    " with slovak", "slovak ", "limba slovaca", "slovaca",
+    " with turkish", "turkish ", "limba turca", "turca",
+]
+
 INSURANCE_AGENT_EXCLUDE = [
     "agent de asigurare", "insurance agent", "sales agent", "agent vanzari",
     "agent comercial", "vanzare asigurari", "prospectare clienti",
@@ -215,6 +230,69 @@ class GoogleSheetWriter:
 sheet_writer = GoogleSheetWriter()
 
 
+def extract_text_snippet(html: str, max_len: int = 1200) -> str:
+    if not html:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_len]
+
+
+def fetch_ejobs_job_details(job_url: str, headers: dict) -> tuple[str, str]:
+    """Return (description_snippet, location) from eJobs job page."""
+    try:
+        r = requests.get(job_url, headers=headers, timeout=15)
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        description = ""
+        location = "Remote"
+
+        # Prefer JobPosting schema if available.
+        for script in soup.select("script[type='application/ld+json']"):
+            raw = (script.string or script.get_text() or "").strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+
+            candidates = payload if isinstance(payload, list) else [payload]
+            for node in candidates:
+                if not isinstance(node, dict):
+                    continue
+                if node.get("@type") == "JobPosting":
+                    desc_html = node.get("description", "")
+                    if desc_html:
+                        description = extract_text_snippet(desc_html)
+
+                    job_loc = node.get("jobLocation", {})
+                    if isinstance(job_loc, list) and job_loc:
+                        job_loc = job_loc[0]
+                    if isinstance(job_loc, dict):
+                        address = job_loc.get("address", {})
+                        if isinstance(address, dict):
+                            location = (
+                                address.get("addressLocality", "")
+                                or address.get("addressRegion", "")
+                                or address.get("addressCountry", "")
+                                or location
+                            )
+                    if description:
+                        return description, location
+
+        # Fallback: meta description snippet.
+        if not description:
+            meta_desc = soup.select_one("meta[name='description']")
+            if meta_desc:
+                description = extract_text_snippet(meta_desc.get("content", ""))
+
+        return description, location
+    except Exception as e:
+        print(f"  WARN [ejobs-detail]: {e}")
+        return "", "Remote"
+
+
 # ── Filters ──────────────────────────────────────────────────────────────────
 
 def normalize_text(text: str) -> str:
@@ -253,6 +331,11 @@ def is_insurance_agent_role(title: str, description: str) -> bool:
     combined = (title + " " + description).lower()
     return any(kw in combined for kw in INSURANCE_AGENT_EXCLUDE)
 
+
+def requires_foreign_language(title: str, description: str) -> bool:
+    combined = f" {title} {description} ".lower()
+    return any(kw in combined for kw in FOREIGN_LANGUAGE_EXCLUDE)
+
 def should_skip(title: str, description: str, location: str = "", force_remote: bool = False) -> bool:
     combined = (title + " " + description + " " + location).lower()
     if not force_remote and not is_remote(combined):
@@ -263,6 +346,8 @@ def should_skip(title: str, description: str, location: str = "", force_remote: 
     if not is_relevant(title, description):
         return True
     if requires_advanced_english(combined):
+        return True
+    if requires_foreign_language(title, description):
         return True
     if is_insurance_agent_role(title, description):
         return True
@@ -400,7 +485,7 @@ def scrape_ejobs():
         "automation", "daune asigurari", "it administrator", "crm",
     ]
     count = 0
-    skip_stats = {"not_remote": 0, "not_relevant": 0, "advanced_english": 0, "agent_role": 0, "other": 0}
+    skip_stats = {"not_remote": 0, "not_relevant": 0, "advanced_english": 0, "foreign_language": 0, "agent_role": 0, "other": 0}
     for query in searches:
         try:
             url = f"https://www.ejobs.ro/locuri-de-munca/remote/?search={requests.utils.quote(query)}"
@@ -486,8 +571,11 @@ def scrape_ejobs():
                 job_url = job["url"].strip()
                 if not title or not job_url:
                     continue
-                location = "Remote"
-                description = title
+
+                description, detected_location = fetch_ejobs_job_details(job_url, headers)
+                description = description or title
+                location = detected_location or "Remote"
+
                 combined = (title + " " + description + " " + location).lower()
                 if not is_remote(combined):
                     skip_stats["not_remote"] += 1
@@ -497,6 +585,9 @@ def scrape_ejobs():
                     continue
                 if requires_advanced_english(combined):
                     skip_stats["advanced_english"] += 1
+                    continue
+                if requires_foreign_language(title, description):
+                    skip_stats["foreign_language"] += 1
                     continue
                 if is_insurance_agent_role(title, description):
                     skip_stats["agent_role"] += 1
