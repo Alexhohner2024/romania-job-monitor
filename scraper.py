@@ -124,9 +124,14 @@ def build_short_description_ru(title: str, location: str, salary: str) -> str:
     if not GEMINI_API_KEY or not _genai_available:
         return fallback
 
+    model_candidates = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+    ]
+
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
         prompt = (
             f"Переведи название вакансии на русский язык и напиши одно короткое предложение "
             f"(до 80 символов), описывающее эту работу на русском языке. "
@@ -134,11 +139,18 @@ def build_short_description_ru(title: str, location: str, salary: str) -> str:
             f"Ответь строго в одну строку в формате (без лишних слов, без переносов):\n"
             f"💼 <название на русском>. <1 предложение о работе>. 🌍 Локация: {loc}. 💰 Зарплата: {salary_part}."
         )
-        response = model.generate_content(prompt)
-        result = response.text.strip()
-        if result and len(result) > 10:
-            print(f"  🔤 Translated: {result[:90]}")
-            return result
+
+        for model_name in model_candidates:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                result = (response.text or "").strip()
+                if result and len(result) > 10:
+                    print(f"  🔤 Translated ({model_name}): {result[:90]}")
+                    return result
+            except Exception as model_error:
+                print(f"  WARN [gemini:{model_name}]: {model_error}")
+                continue
     except Exception as e:
         print(f"  WARN [gemini]: {e}")
 
@@ -180,6 +192,10 @@ class GoogleSheetWriter:
         self.init()
         url = (job.get("url") or "").strip()
         if not url or url in self.existing_urls:
+            if not url:
+                print("  ℹ️  Skip Google Sheet: empty url")
+            else:
+                print(f"  ℹ️  Skip Google Sheet (duplicate url): {url[:100]}")
             return
         row = [
             job.get("date_found", ""),
@@ -281,6 +297,7 @@ def save_job(title, company, location, description, url, source, date_posted=Non
 
     existing = supabase.table("jobs").select("id").eq("url", url).execute()
     if existing.data:
+        print(f"  ℹ️  Skip Supabase (duplicate url): {url[:100]}")
         return  # already exists
 
     supabase.table("jobs").insert({
