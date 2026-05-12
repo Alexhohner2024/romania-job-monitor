@@ -589,7 +589,7 @@ def scrape_ejobs():
 
                 description, detected_location = fetch_ejobs_job_details(job_url, headers)
                 description = description or title
-                location = detected_location or "Remote"
+                location = "Romania"
 
                 combined = (title + " " + description + " " + location).lower()
                 if not is_remote(combined):
@@ -648,7 +648,7 @@ def scrape_bestjobs():
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.bestjobs.eu" + job_url
                 company = ""
-                location = "Remote"
+                location = "Romania"
                 description = title
 
                 if should_skip(title, description, location):
@@ -693,7 +693,7 @@ def scrape_hipo():
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.hipo.ro" + job_url
                 company = ""
-                location = "Remote"
+                location = "Romania"
                 description = title
 
                 if should_skip(title, description, location):
