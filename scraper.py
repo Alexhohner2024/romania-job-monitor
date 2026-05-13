@@ -21,6 +21,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+STRICT_GEO_FILTER = os.environ.get("STRICT_GEO_FILTER", "0").strip().lower() in {"1", "true", "yes"}
 
 # ── Keywords ────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,21 @@ INSURANCE_KEYWORDS = [
 
 ALL_KEYWORDS = IT_KEYWORDS + INSURANCE_KEYWORDS
 
+# Individual significant words extracted from ALL_KEYWORDS for broader matching
+_RELEVANT_WORDS = {
+    w for phrase in ALL_KEYWORDS for w in phrase.split()
+    if len(w) >= 4 or w in {"it", "ai"}
+}
+# Add Romanian variations and related terms
+_RELEVANT_WORDS.update({
+    "suport", "tehnic", "support", "technic", "tech", "help", "desk",
+    "service", "admin", "administra", "system", "desktop", "automat",
+    "specialist", "consultant", "integrari", "procese", "inovare",
+    "daune", "asigur", "claims", "insurance", "underwrit",
+    "operațiuni", "operatiuni", "operational", "analyst", "analist",
+    "coordonator", "coordinat", "proiect", "project",
+})
+
 REMOTE_KEYWORDS = [
     "remote", "online", "work from home", "wfh", "de acasă", "de acasa",
     "la distanță", "la distanta", "telemuncă", "telemunca", "hybrid", "hibrid",
@@ -54,6 +70,21 @@ ENGLISH_ADVANCED_KEYWORDS = [
     "fluent english", "advanced english", "english c1", "english c2",
     "native english", "proficient english", "english mandatory",
     "limba engleza - avansat", "engleza avansata", "engleza fluenta",
+]
+
+# Exclude vacancies requiring non-English languages (Dutch, German, etc.).
+FOREIGN_LANGUAGE_EXCLUDE = [
+    " with dutch", "dutch ", "limba olandeza", "olandeza",
+    " with german", "german ", "limba germana", "germana",
+    " with french", "french ", "limba franceza", "franceza",
+    " with italian", "italian ", "limba italiana", "italiana",
+    " with spanish", "spanish ", "limba spaniola", "spaniola",
+    " with portuguese", "portuguese ", "limba portugheza", "portugheza",
+    " with hungarian", "hungarian ", "limba maghiara", "maghiara",
+    " with polish", "polish ", "limba poloneza", "poloneza",
+    " with czech", "czech ", "limba ceha", "ceha",
+    " with slovak", "slovak ", "limba slovaca", "slovaca",
+    " with turkish", "turkish ", "limba turca", "turca",
 ]
 
 INSURANCE_AGENT_EXCLUDE = [
@@ -124,9 +155,14 @@ def build_short_description_ru(title: str, location: str, salary: str) -> str:
     if not GEMINI_API_KEY or not _genai_available:
         return fallback
 
+    model_candidates = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+    ]
+
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
         prompt = (
             f"Переведи название вакансии на русский язык и напиши одно короткое предложение "
             f"(до 80 символов), описывающее эту работу на русском языке. "
@@ -134,11 +170,18 @@ def build_short_description_ru(title: str, location: str, salary: str) -> str:
             f"Ответь строго в одну строку в формате (без лишних слов, без переносов):\n"
             f"💼 <название на русском>. <1 предложение о работе>. 🌍 Локация: {loc}. 💰 Зарплата: {salary_part}."
         )
-        response = model.generate_content(prompt)
-        result = response.text.strip()
-        if result and len(result) > 10:
-            print(f"  🔤 Translated: {result[:90]}")
-            return result
+
+        for model_name in model_candidates:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                result = (response.text or "").strip()
+                if result and len(result) > 10:
+                    print(f"  🔤 Translated ({model_name}): {result[:90]}")
+                    return result
+            except Exception as model_error:
+                print(f"  WARN [gemini:{model_name}]: {model_error}")
+                continue
     except Exception as e:
         print(f"  WARN [gemini]: {e}")
 
@@ -180,6 +223,10 @@ class GoogleSheetWriter:
         self.init()
         url = (job.get("url") or "").strip()
         if not url or url in self.existing_urls:
+            if not url:
+                print("  ℹ️  Skip Google Sheet: empty url")
+            else:
+                print(f"  ℹ️  Skip Google Sheet (duplicate url): {url[:100]}")
             return
         row = [
             job.get("date_found", ""),
@@ -197,6 +244,69 @@ class GoogleSheetWriter:
 
 
 sheet_writer = GoogleSheetWriter()
+
+
+def extract_text_snippet(html: str, max_len: int = 1200) -> str:
+    if not html:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_len]
+
+
+def fetch_ejobs_job_details(job_url: str, headers: dict) -> tuple[str, str]:
+    """Return (description_snippet, location) from eJobs job page."""
+    try:
+        r = requests.get(job_url, headers=headers, timeout=15)
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        description = ""
+        location = "Remote"
+
+        # Prefer JobPosting schema if available.
+        for script in soup.select("script[type='application/ld+json']"):
+            raw = (script.string or script.get_text() or "").strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+
+            candidates = payload if isinstance(payload, list) else [payload]
+            for node in candidates:
+                if not isinstance(node, dict):
+                    continue
+                if node.get("@type") == "JobPosting":
+                    desc_html = node.get("description", "")
+                    if desc_html:
+                        description = extract_text_snippet(desc_html)
+
+                    job_loc = node.get("jobLocation", {})
+                    if isinstance(job_loc, list) and job_loc:
+                        job_loc = job_loc[0]
+                    if isinstance(job_loc, dict):
+                        address = job_loc.get("address", {})
+                        if isinstance(address, dict):
+                            location = (
+                                address.get("addressLocality", "")
+                                or address.get("addressRegion", "")
+                                or address.get("addressCountry", "")
+                                or location
+                            )
+                    if description:
+                        return description, location
+
+        # Fallback: meta description snippet.
+        if not description:
+            meta_desc = soup.select_one("meta[name='description']")
+            if meta_desc:
+                description = extract_text_snippet(meta_desc.get("content", ""))
+
+        return description, location
+    except Exception as e:
+        print(f"  WARN [ejobs-detail]: {e}")
+        return "", "Remote"
 
 
 # ── Filters ──────────────────────────────────────────────────────────────────
@@ -217,10 +327,16 @@ def is_remote(text: str) -> bool:
 _ALLOWED_GEO = {"worldwide", "anywhere", "global", "remote", "romania", "international", "eu", "europe"}
 
 def is_geo_allowed(location: str) -> bool:
-    """For global sources: allow only Romania, worldwide/anywhere, or unspecified location."""
+    """For global sources: allow only Romania when STRICT_GEO_FILTER=True, otherwise allow Romania/worldwide/anywhere."""
     if not location or not location.strip():
         return True
     loc = normalize_text(location)
+    
+    # If strict geo filter is enabled, only allow Romania
+    if STRICT_GEO_FILTER:
+        return "romania" in loc
+    
+    # Original logic for relaxed filter
     if "romania" in loc:
         return True
     return any(term in loc for term in _ALLOWED_GEO)
@@ -228,6 +344,13 @@ def is_geo_allowed(location: str) -> bool:
 def is_relevant(title: str, description: str) -> bool:
     combined = (title + " " + description).lower()
     return any(kw in combined for kw in ALL_KEYWORDS)
+
+def is_broadly_relevant(title: str, description: str) -> bool:
+    """More lenient relevance: checks for significant keyword words in the title."""
+    if is_relevant(title, description):
+        return True
+    title_lower = normalize_text(title)
+    return any(w in title_lower for w in _RELEVANT_WORDS)
 
 def requires_advanced_english(text: str) -> bool:
     text = text.lower()
@@ -237,16 +360,26 @@ def is_insurance_agent_role(title: str, description: str) -> bool:
     combined = (title + " " + description).lower()
     return any(kw in combined for kw in INSURANCE_AGENT_EXCLUDE)
 
+
+def requires_foreign_language(title: str, description: str) -> bool:
+    combined = f" {title} {description} ".lower()
+    return any(kw in combined for kw in FOREIGN_LANGUAGE_EXCLUDE)
+
 def should_skip(title: str, description: str, location: str = "", force_remote: bool = False) -> bool:
     combined = (title + " " + description + " " + location).lower()
     if not force_remote and not is_remote(combined):
         return True
     # For global sources (force_remote=True), only allow Romania / worldwide / anywhere
-    if force_remote and not is_geo_allowed(location):
+    if force_remote and STRICT_GEO_FILTER and not is_geo_allowed(location):
         return True
-    if not is_relevant(title, description):
+    # For local sources (non-force_remote), use broader relevance; for global, strict
+    if force_remote and not is_relevant(title, description):
+        return True
+    if not force_remote and not is_broadly_relevant(title, description):
         return True
     if requires_advanced_english(combined):
+        return True
+    if requires_foreign_language(title, description):
         return True
     if is_insurance_agent_role(title, description):
         return True
@@ -281,6 +414,7 @@ def save_job(title, company, location, description, url, source, date_posted=Non
 
     existing = supabase.table("jobs").select("id").eq("url", url).execute()
     if existing.data:
+        print(f"  ℹ️  Skip Supabase (duplicate url): {url[:100]}")
         return  # already exists
 
     supabase.table("jobs").insert({
@@ -338,11 +472,15 @@ def scrape_remotive():
 def scrape_jobicy():
     print("\n[jobicy.com] Fetching API...")
     try:
-        searches = ["support", "automation", "crm", "helpdesk", "insurance"]
+        searches = [
+            "support", "customer-support", "technical-support", "it-support",
+            "automation", "crm", "helpdesk", "service-desk", "insurance",
+            "claims", "operations",
+        ]
         count = 0
         seen_ids = set()
         for tag in searches:
-            url = f"https://jobicy.com/api/v2/remote-jobs?count=50&tag={tag}"
+            url = f"https://jobicy.com/api/v2/remote-jobs?count=100&tag={tag}"
             r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
             data = r.json()
             jobs = data.get("jobs", [])
@@ -383,45 +521,66 @@ def scrape_ejobs():
         "automation", "daune asigurari", "it administrator", "crm",
     ]
     count = 0
-    skip_stats = {"not_remote": 0, "not_relevant": 0, "advanced_english": 0, "agent_role": 0, "other": 0}
+    skip_stats = {"not_remote": 0, "not_relevant": 0, "advanced_english": 0, "foreign_language": 0, "agent_role": 0, "other": 0}
     for query in searches:
         try:
-            url = f"https://www.ejobs.ro/locuri-de-munca/remote/?search={requests.utils.quote(query)}"
-            r = requests.get(url, headers=headers, timeout=15)
-            soup = BeautifulSoup(r.text, "html.parser")
             jobs = []
             anchor_samples = []
-            for a in soup.select("a[href]"):
-                href = (a.get("href") or "").strip()
-                text = a.get_text(" ", strip=True)
-                if href and text and ("locuri-de-munca" in href or "remote" in href):
-                    anchor_samples.append((href, text))
-                    if len(anchor_samples) >= 5:
-                        break
-            for script in soup.select("script[type='application/ld+json']"):
-                raw = (script.string or script.get_text() or "").strip()
-                if not raw:
-                    continue
-                try:
-                    payload = json.loads(raw)
-                except Exception:
-                    continue
+            for page in range(1, 4):
+                page_suffix = "" if page == 1 else f"/pagina{page}"
+                url = f"https://www.ejobs.ro/locuri-de-munca/remote{page_suffix}/?search={requests.utils.quote(query)}"
+                r = requests.get(url, headers=headers, timeout=15)
+                soup = BeautifulSoup(r.text, "html.parser")
 
-                items = payload if isinstance(payload, list) else [payload]
-                for item in items:
-                    if not isinstance(item, dict):
+                for a in soup.select("a[href]"):
+                    href = (a.get("href") or "").strip()
+                    text = a.get_text(" ", strip=True)
+                    if href and text and ("locuri-de-munca" in href or "remote" in href):
+                        anchor_samples.append((href, text))
+                        if len(anchor_samples) >= 5:
+                            break
+
+                for script in soup.select("script[type='application/ld+json']"):
+                    raw = (script.string or script.get_text() or "").strip()
+                    if not raw:
                         continue
-                    elements = item.get("itemListElement", [])
-                    if not isinstance(elements, list):
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
                         continue
-                    for el in elements:
-                        if not isinstance(el, dict):
+
+                    items = payload if isinstance(payload, list) else [payload]
+                    for item in items:
+                        if not isinstance(item, dict):
                             continue
-                        sub = el.get("item", {}) if isinstance(el.get("item", {}), dict) else {}
-                        title = sub.get("name", "") or el.get("name", "")
-                        job_url = sub.get("id", "") or el.get("url", "")
-                        if title and job_url and "ejobs.ro/user/locuri-de-munca/" in job_url:
-                            jobs.append({"title": title, "url": job_url})
+                        candidate_lists = []
+
+                        direct_elements = item.get("itemListElement", [])
+                        if isinstance(direct_elements, list):
+                            candidate_lists.append(direct_elements)
+
+                        main_entity = item.get("mainEntity", {})
+                        if isinstance(main_entity, dict) and isinstance(main_entity.get("itemListElement"), list):
+                            candidate_lists.append(main_entity.get("itemListElement", []))
+
+                        graph_nodes = item.get("@graph", [])
+                        if isinstance(graph_nodes, list):
+                            for node in graph_nodes:
+                                if isinstance(node, dict) and isinstance(node.get("itemListElement"), list):
+                                    candidate_lists.append(node.get("itemListElement", []))
+                                node_main_entity = node.get("mainEntity", {}) if isinstance(node, dict) else {}
+                                if isinstance(node_main_entity, dict) and isinstance(node_main_entity.get("itemListElement"), list):
+                                    candidate_lists.append(node_main_entity.get("itemListElement", []))
+
+                        for elements in candidate_lists:
+                            for el in elements:
+                                if not isinstance(el, dict):
+                                    continue
+                                sub = el.get("item", {}) if isinstance(el.get("item", {}), dict) else {}
+                                title = sub.get("name", "") or el.get("name", "")
+                                job_url = sub.get("id", "") or el.get("url", "")
+                                if title and job_url and "ejobs.ro/user/locuri-de-munca/" in job_url:
+                                    jobs.append({"title": title, "url": job_url})
 
             # Fallback: extract from inline JSON-like blocks if ld+json didn't include list items
             if not jobs:
@@ -452,17 +611,23 @@ def scrape_ejobs():
                 job_url = job["url"].strip()
                 if not title or not job_url:
                     continue
-                location = "Remote"
-                description = title
+
+                description, detected_location = fetch_ejobs_job_details(job_url, headers)
+                description = description or title
+                location = "Remote, Romania"
+
                 combined = (title + " " + description + " " + location).lower()
                 if not is_remote(combined):
                     skip_stats["not_remote"] += 1
                     continue
-                if not is_relevant(title, description):
+                if not is_broadly_relevant(title, description):
                     skip_stats["not_relevant"] += 1
                     continue
                 if requires_advanced_english(combined):
                     skip_stats["advanced_english"] += 1
+                    continue
+                if requires_foreign_language(title, description):
+                    skip_stats["foreign_language"] += 1
                     continue
                 if is_insurance_agent_role(title, description):
                     skip_stats["agent_role"] += 1
@@ -508,7 +673,7 @@ def scrape_bestjobs():
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.bestjobs.eu" + job_url
                 company = ""
-                location = "Remote"
+                location = "Remote, Romania"
                 description = title
 
                 if should_skip(title, description, location):
@@ -553,7 +718,7 @@ def scrape_hipo():
                 if job_url and not job_url.startswith("http"):
                     job_url = "https://www.hipo.ro" + job_url
                 company = ""
-                location = "Remote"
+                location = "Remote, Romania"
                 description = title
 
                 if should_skip(title, description, location):
