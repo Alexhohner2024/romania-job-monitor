@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "booming-voice-407810",
+  "private_key_id": "af585f0ba9c8335895195f5c34874c50f804570e",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDIQzl8n/ccwbRu\nqFSlnyCR5SNpiQ53TyTkuu4BBZUavW5zcSyYbBG+Rj4qRswZU63sHOhuDGWtolkD\nMzzwsPemMgMoW/8e/foWCPODJCaM8Ya9v2NuoKO+pb+vJaAlOTHg1vxbUnF8mI0L\nX0Yp47LELLtIxsQrkqIR5E92JIxDSXih2WkfxQe458C1JRcr+x0SXCyNjm6c0wax\neRfw6iUFn2tbLY2pxzHIvUzbtFQdQpUSP7Vx1meuwddjVIDJQzfJVcxLwne3JwvV\n++VjjPZ5hxWnZK4U5yjdh7b5Oi3UAlrjzZn0oLbn1BYi0r0HJh1B9+n0I0dNR1u4\nWw/coABvAgMBAAECggEACBy+Kp/eQa2+O5mZmn8T6HdY1Bn1I2qOivdyr23ErUTW\neDWxyvxK3SNm3o1oD926H/akGtv7j03bWswLxNkeWVpaktII6/5Chtb7RbtWqLn1\n9rJ7aCedSnXX9+Yi7kFfFYWiOKf0X6VcWLwV7L5WMHHDuCLG1fy9R0CxdMWAGMZ4\n0DtRCToODS9dEH+k4gzm7rFIjTc4UnG7knWPnOtiTC6+xdQhwA/xqjnmGFppfgVc\nbAvOAErUy8XZipZ9e+Ad5GxBdRoOI0BW18EwJTwmGndXW2U23TEUpqqNpSsWrcww\nvv5Rfc73MOujhI5TZgv8ODlsCk29ffBEguDq0fQrLQKBgQD0djCAjsliJVz4jDsV\n6osz7lAxu/p21nT5fRLPNiUyBlGF1omYlf+D2cgfu/P5t3dufz3Jq7TotkXuKXSd\nO7NnJvbE0YXXcncrvcFXRgzWloChprITVrBqv78RNkIJXwcYfptlXQqDmvyDGJTe\np2omXViV1631kG3YvO+c3NCNGwKBgQDRtvsvceAsBHZnftqmSjngmQCD+eMOo/GR\nEUXGAd9pd+t7C7oWU6cczeBPQajTTmHXXAAFtEQlo6OzBJnd/mGyH84UWAteZeG2\nqYSE9/7T+MoJTt4f0zFPPWLXx8LoRnI1PhLsIHdA34/5dQEdj7nfVIr4XTmdV4oA\n3SCGX5YzPQKBgCrc6kYwQwktae6+j8GY/U1etLrzrcfWdG4mSv0ADmeGChdAdaHG\ncyXIMrm1t+KKE6vRLaFFtRO0mfBXXnYPOLaWc2AxKJmNHW4S+Gp4AtpBS06Mrt6L\nLaWZ90NqUwvXmKPn1xFfze8jZrEJx1h+3DLb3SNwzLSo3UnKXu0PHpYPAoGAY90m\nr+kiPtPBLneR1y3xcapqPG56WTZoihQXjbrGkIqyb92dt5QOOAExl4xEwJrKrKr6\nt7yn1uSdx1mhi7ze+Nt8XuOuRj1txnXizQ7rIjWOv+/2hmEjUgCBWQ+fGMyzBfeR\nOzAamaHcBYZaCaGveVHg+3QpQ2u0I8Uo/9P0ymECgYEAxaTaZN5KuoXG0+2GxjsF\n/xcy8jzF2lvUFuaAVJkAn3C6MuwbPljrgUx7YWyv0lLgAs+2Qou0r7dqGrekRNKX\nZx8Wlh3eL9+mf/3uJa1p5m/MAQMW3Y27wELgZFLsHKM3o1HYn0i9N3rMkKEVsgOR\n9KX87hNKoR6I69znB1l2YP0=\n-----END PRIVATE KEY-----\n",
+  "client_email": "service-alexbabaian2008@booming-voice-407810.iam.gserviceaccount.com",
+  "client_id": "112550705942187314895",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/service-alexbabaian2008%40booming-voice-407810.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
